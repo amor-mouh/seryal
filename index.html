@@ -60,6 +60,7 @@ input[type="text"] { flex:1; }
     <div class="hint">
       يعمل على أندرويد كروم مع كابل OTG و ESP32 عبر Web Serial. عند الطلب اختر الجهاز ذو منفذ USB-Serial (CDC/ACM). قد تحتاج لتفعيل العلم: chrome://flags/#enable-experimental-web-platform-features
     </div>
+    <div id="compat" class="hint" style="color:#ffb74d"></div>
   </div>
 
 <script>
@@ -233,6 +234,17 @@ if (supportsWebSerial()) {
       ui.status.textContent = 'جهاز معروف — اضغط اتصال';
     }
   });
+}
+
+// Surface compatibility issues (mobile often needs HTTPS)
+const compat = document.getElementById('compat');
+const isSecure = (location.protocol === 'https:' || location.hostname === 'localhost');
+if (!supportsWebSerial()) {
+  compat.textContent = 'هذا المتصفح لا يدعم Web Serial. استخدم Chrome على أندرويد.';
+}
+if (!isSecure) {
+  const msg = 'يجب فتح الصفحة عبر HTTPS (أو localhost) لكي يعمل Web Serial على الهاتف. جرّب GitHub Pages أو أي استضافة HTTPS.';
+  compat.textContent = compat.textContent ? (compat.textContent + ' — ' + msg) : msg;
 }
 </script>
 </body>
