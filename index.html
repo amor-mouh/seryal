@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serial Monitor (ESP32)</title>
+<style>
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Tahoma, Arial, sans-serif; margin: 0; background:#0b0f14; color:#e6edf3; }
+.wrap { display:flex; flex-direction:column; gap:12px; padding:16px; max-width:900px; margin:0 auto; }
+.row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+button, select, input { background:#111722; color:#e6edf3; border:1px solid #2b3645; border-radius:8px; padding:10px 12px; font-size:15px; }
+button.primary { background:#1976d2; border-color:#1976d2; }
+button.danger { background:#b71c1c; border-color:#b71c1c; }
+button:disabled { opacity:.6; }
+textarea { width:100%; min-height:45vh; background:#0b111a; color:#98c379; border:1px solid #2b3645; border-radius:10px; padding:12px; line-height:1.4; resize:vertical; white-space:pre-wrap; }
+input[type="text"] { flex:1; }
+.muted { color:#9fb0c0; font-size:13px; }
+.pill { padding:4px 8px; background:#1b2433; border:1px solid #2b3645; border-radius:999px; }
+.spacer { flex:1; }
+.hint { font-size:13px; color:#9fb0c0; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h2 style="margin:0 0 8px">مراقب السيريال للهاتف — ESP32</h2>
+    <div class="row">
+      <button id="btnConnect" class="primary">اتصال</button>
+      <button id="btnDisconnect" class="danger" disabled>فصل</button>
+      <span id="status" class="pill">غير متصل</span>
+      <div class="spacer"></div>
+      <label class="muted">البود:</label>
+      <select id="baud">
+        <option>115200</option>
+        <option>921600</option>
+        <option>460800</option>
+        <option>230400</option>
+        <option>57600</option>
+        <option>38400</option>
+        <option>19200</option>
+        <option>9600</option>
+      </select>
+      <label class="muted">نهاية السطر:</label>
+      <select id="lineEnding">
+        <option value="\n">LF</option>
+        <option value="\r\n" selected>CRLF</option>
+        <option value="">لا شيء</option>
+      </select>
+    </div>
+
+    <textarea id="log" readonly placeholder="سيظهر هنا خرج السيريال..."></textarea>
+
+    <div class="row">
+      <input id="input" type="text" placeholder="أدخل أمراً وأرسل" />
+      <button id="btnSend">إرسال</button>
+      <button id="btnClear">مسح</button>
+      <button id="btnSave">حفظ</button>
+      <label class="hint"><input type="checkbox" id="autoScroll" checked> تمرير تلقائي</label>
+    </div>
+
+    <div class="hint">
+      يعمل على أندرويد كروم مع كابل OTG و ESP32 عبر Web Serial. عند الطلب اختر الجهاز ذو منفذ USB-Serial (CDC/ACM). قد تحتاج لتفعيل العلم: chrome://flags/#enable-experimental-web-platform-features
+    </div>
+  </div>
+
+<script>
+const ui = {
+  connect: document.getElementById('btnConnect'),
+  disconnect: document.getElementById('btnDisconnect'),
+  status: document.getElementById('status'),
+  baud: document.getElementById('baud'),
+  lineEnding: document.getElementById('lineEnding'),
+  log: document.getElementById('log'),
+  input: document.getElementById('input'),
+  send: document.getElementById('btnSend'),
+  clear: document.getElementById('btnClear'),
+  save: document.getElementById('btnSave'),
+  autoScroll: document.getElementById('autoScroll'),
+};
+
+let port = null;
+let reader = null;
+let keepReading = false;
+
+function supportsWebSerial() {
+  return 'serial' in navigator;
+}
+
+function setConnected(connected) {
+  ui.connect.disabled = connected;
+  ui.disconnect.disabled = !connected;
+  ui.baud.disabled = connected; // change only when disconnected
+  ui.status.textContent = connected ? 'متصل' : 'غير متصل';
+}
+
+function appendToLog(text) {
+  ui.log.value += text;
+  if (ui.autoScroll.checked) {
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+}
+
+function lineDecoder() {
+  const decoder = new TextDecoder();
+  let carry = '';
+  return {
+    push(chunk) {
+      carry += decoder.decode(chunk, { stream: true });
+      // Do not split lines here; just append as-is to preserve device formatting
+      appendToLog(carry);
+      carry = '';
+    },
+    flush() {
+      if (carry) appendToLog(carry), carry = '';
+    }
+  };
+}
+
+async function startReadLoop() {
+  const dec = lineDecoder();
+  keepReading = true;
+  const textStream = port.readable;
+  reader = textStream.getReader();
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) dec.push(value);
+    }
+  } catch (e) {
+    console.error('Read error', e);
+    appendToLog(`\n[خطأ قراءة] ${e.message || e}\n`);
+  } finally {
+    dec.flush();
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
+async function doConnect() {
+  if (!supportsWebSerial()) {
+    alert('هذا المتصفح لا يدعم Web Serial. حاول كروم على أندرويد.');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort({
+      filters: [
+        // Common USB-Serial chips (optional filters)
+        // { usbVendorId: 0x10C4 }, // CP210x
+        // { usbVendorId: 0x1A86 }, // CH340
+        // { usbVendorId: 0x0403 }, // FTDI
+      ]
+    });
+    const baudRate = Number(ui.baud.value);
+    await port.open({ baudRate });
+
+    // Handle disconnect events
+    navigator.serial.addEventListener('disconnect', (e) => {
+      if (e.target === port) {
+        appendToLog('\n[تم فصل الجهاز]\n');
+        doDisconnect();
+      }
+    });
+
+    setConnected(true);
+    appendToLog(`[متصل @ ${baudRate}]\n`);
+    startReadLoop();
+  } catch (e) {
+    console.error(e);
+    alert('فشل الاتصال: ' + (e.message || e));
+    try { if (port) await port.close(); } catch {}
+    port = null;
+    setConnected(false);
+  }
+}
+
+async function doDisconnect() {
+  try {
+    keepReading = false;
+    if (reader) { try { await reader.cancel(); } catch {} }
+    if (port) { try { await port.close(); } catch {} }
+  } finally {
+    reader = null;
+    port = null;
+    setConnected(false);
+    appendToLog('\n[غير متصل]\n');
+  }
+}
+
+async function sendLine() {
+  if (!port || !port.writable) return;
+  const raw = ui.input.value;
+  if (!raw) return;
+  const encoder = new TextEncoder();
+  const ending = ui.lineEnding.value.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+  const text = raw + ending;
+  const writer = port.writable.getWriter();
+  try {
+    await writer.write(encoder.encode(text));
+    ui.input.value = '';
+    ui.input.focus();
+  } catch (e) {
+    console.error('Write error', e);
+    appendToLog(`\n[خطأ كتابة] ${e.message || e}\n`);
+  } finally {
+    try { writer.releaseLock(); } catch {}
+  }
+}
+
+ui.connect.addEventListener('click', doConnect);
+ui.disconnect.addEventListener('click', doDisconnect);
+ui.send.addEventListener('click', sendLine);
+ui.input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendLine();
+  }
+});
+ui.clear.addEventListener('click', () => ui.log.value = '');
+ui.save.addEventListener('click', () => {
+  const blob = new Blob([ui.log.value], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'serial-log.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+});
+
+// Auto reconnect suggestion: show available ports
+if (supportsWebSerial()) {
+  navigator.serial.getPorts().then((ports) => {
+    if (ports.length) {
+      ui.status.textContent = 'جهاز معروف — اضغط اتصال';
+    }
+  });
+}
+</script>
+</body>
+</html>
